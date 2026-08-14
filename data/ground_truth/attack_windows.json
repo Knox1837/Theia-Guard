@@ -1,0 +1,26 @@
+{
+  "source": "TA51_Final_report_E5.pdf, section 8.6 (page 79)",
+  "engagement": "E5",
+  "target_host": "ta1-theia-target-1",
+  "target_ip": "128.55.12.110",
+  "attack_name": "Firefox Drakon APT BinFmt-Elevate Inject",
+  "date": "2019-05-15",
+  "attack_windows": [
+    {
+      "start_iso": "2019-05-15T14:47:00-04:00",
+      "end_iso": "2019-05-15T14:52:00-04:00",
+      "start_ns": 1557946020000000000,
+      "end_ns": 1557946320000000000,
+      "description": "Firefox exploited via www.nhra.com C2 -> elevate to root -> process listing -> inject into sshd. Confirmed timestamps: 14:48 Firefox connects, 14:49 getpid/whoami (pid 534051), 14:50 elevate success."
+    }
+  ],
+  "malicious_pids": [534051],
+  "known_indicators": {
+    "c2_ips": ["189.141.204.211", "208.203.20.42"],
+    "c2_ports": [80, 80],
+    "exploited_domain": "www.nhra.com",
+    "injected_process": "sshd",
+    "dropped_file": "sshdlog",
+    "technique_notes": "Firefox backdoor -> Drakon APT -> BinFmt-Elevate (privilege escalation) -> process injection into sshd -> shellcode wrote 'sshdlog' to disk"
+  }
+}

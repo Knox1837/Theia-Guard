@@ -1,0 +1,21 @@
+# Data parsing
+fastavro>=1.9.4
+ijson>=3.2.0
+
+# Graph handling
+networkx>=3.2
+
+# ML
+scikit-learn>=1.4
+numpy>=1.26
+joblib>=1.3
+
+# Data analysis / notebooks 
+pandas>=2.2
+matplotlib>=3.8
+seaborn>=0.13
+jupyter>=1.0
+shap>=0.45
+
+# Utilities 
+tqdm>=4.66
