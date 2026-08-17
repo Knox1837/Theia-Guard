@@ -1,19 +1,17 @@
 """
-Loads a trained K-Guard model bundle (IsolationForest + LOF), scores an attack-window .gexf graph, and reports detection performance against PID-based ground truth.
+src/evaluate.py
+Loads a trained K-Guard baseline model, scores an attack-window .gexf graph, and reports detection performance.
 
 Usage:
-    python -m src.evaluate --attack-dir data/processed/attack --model ml\models\baseline_model.joblib --ground-truth data\ground_truth\attack_windows.json --out-json results.json
+    python -m src.evaluate --attack-dir data/processed/attack --model ml/models/baseline_model.joblib --ground-truth data/ground_truth/attack_windows.json --out-json results.json
 """
 from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path
-
 import joblib
 import networkx as nx
 import numpy as np
-
 from ml.features import extract_features
 from .ground_truth import load_malicious_pids
 
@@ -22,8 +20,21 @@ def evaluate_graph(gexf_path: Path, model_path: Path, malicious_pids: set):
     bundle = joblib.load(model_path)
     clf = bundle["model"]
     lof = bundle.get("lof_model")
+    dbscan = bundle.get("dbscan_model")
     threshold = bundle["meta"]["threshold"]
     lof_threshold = bundle["meta"].get("lof_threshold")
+    dbscan_threshold = bundle["meta"].get("dbscan_threshold")
+
+    # Ensemble calibration stats (z-score normalization + combined threshold).
+    # Only present in bundles trained after ensemble support was added.
+    ensemble_threshold = bundle["meta"].get("ensemble_threshold")
+    if_mean = bundle["meta"].get("ensemble_if_mean")
+    if_std = bundle["meta"].get("ensemble_if_std")
+    lof_mean = bundle["meta"].get("ensemble_lof_mean")
+    lof_std = bundle["meta"].get("ensemble_lof_std")
+    dbscan_mean = bundle["meta"].get("ensemble_dbscan_mean")
+    dbscan_std = bundle["meta"].get("ensemble_dbscan_std")
+    has_ensemble = ensemble_threshold is not None and None not in (if_mean, if_std, lof_mean, lof_std, dbscan_mean, dbscan_std)
 
     G = nx.read_gexf(gexf_path)
     X, node_list, feature_names = extract_features(G)
@@ -35,9 +46,7 @@ def evaluate_graph(gexf_path: Path, model_path: Path, malicious_pids: set):
     scores = clf.decision_function(X)
     if_flagged = scores < threshold
 
-    # LOF is a second, independent detector -- flagged if EITHER model fires
-    # (OR-combination), same policy as ml/detector.py. Older model bundles
-    # trained before LOF was added won't have it, so fall back to IF-only.
+    # LOF: second independent detector. 
     if lof is not None and lof_threshold is not None:
         lof_scores = lof.decision_function(X)
         lof_flagged = lof_scores < lof_threshold
@@ -45,7 +54,30 @@ def evaluate_graph(gexf_path: Path, model_path: Path, malicious_pids: set):
         lof_scores = np.full(X.shape[0], np.nan)
         lof_flagged = np.zeros(X.shape[0], dtype=bool)
 
-    flagged = if_flagged | lof_flagged
+    # DBSCAN-style scorer: third independent detector. Same fallback pattern
+    # for bundles saved before this model was added.
+    if dbscan is not None and dbscan_threshold is not None:
+        dbscan_scores = dbscan.decision_function(X)
+        dbscan_flagged = dbscan_scores < dbscan_threshold
+    else:
+        dbscan_scores = np.full(X.shape[0], np.nan)
+        dbscan_flagged = np.zeros(X.shape[0], dtype=bool)
+
+    flagged = if_flagged | lof_flagged | dbscan_flagged
+
+    # Ensemble score: combine all three raw scores via the same z-score normalization used at training time
+    # can flag nodes that no single modelindividually caught
+    if has_ensemble:
+        z_if = (scores - if_mean) / if_std
+        z_lof = (lof_scores - lof_mean) / lof_std
+        z_dbscan = (dbscan_scores - dbscan_mean) / dbscan_std
+        ensemble_scores = (z_if + z_lof + z_dbscan) / 3.0
+        ensemble_flagged = ensemble_scores < ensemble_threshold
+    else:
+        ensemble_scores = np.full(X.shape[0], np.nan)
+        ensemble_flagged = np.zeros(X.shape[0], dtype=bool)
+
+    flagged = flagged | ensemble_flagged
 
     # Look up each scored node's real pid from the graph to compare against
     # ground truth. node_list entries are graph node IDs (hex UUIDs).
@@ -65,7 +97,9 @@ def evaluate_graph(gexf_path: Path, model_path: Path, malicious_pids: set):
         "flagged_fraction": float(flagged.mean()),
         "n_flagged_by_if": int(if_flagged.sum()),
         "n_flagged_by_lof": int(lof_flagged.sum()),
-        "n_flagged_by_both": int((if_flagged & lof_flagged).sum()),
+        "n_flagged_by_dbscan": int(dbscan_flagged.sum()),
+        "n_flagged_by_ensemble_only": int((ensemble_flagged & ~(if_flagged | lof_flagged | dbscan_flagged)).sum()),
+        "n_flagged_by_all_three": int((if_flagged & lof_flagged & dbscan_flagged).sum()),
     }
 
     if malicious_pids:
@@ -102,9 +136,7 @@ def evaluate_graph(gexf_path: Path, model_path: Path, malicious_pids: set):
             "proxy only. Provide --ground-truth for real precision/recall."
         )
 
-    # Top-N flagged anomalies, with pid + whether it matches ground truth.
-    # Ranked by IsolationForest score (kept as the primary ranking signal,
-    # same as before) but LOF's score and flag are reported alongside it.
+    # Top-N flagged anomalies, with pid + whether it matches ground truth.Ranked by IsolationForest score (kept as the primary ranking signal) with LOF and DBSCAN scores/flags reported alongside.
     order = np.argsort(scores)  # most anomalous first (lowest score)
     top_n = min(15, len(order))
     top_rows = []
@@ -116,6 +148,10 @@ def evaluate_graph(gexf_path: Path, model_path: Path, malicious_pids: set):
             "if_flagged": bool(if_flagged[idx]),
             "lof_score": float(lof_scores[idx]) if lof is not None else None,
             "lof_flagged": bool(lof_flagged[idx]),
+            "dbscan_score": float(dbscan_scores[idx]) if dbscan is not None else None,
+            "dbscan_flagged": bool(dbscan_flagged[idx]),
+            "ensemble_score": float(ensemble_scores[idx]) if has_ensemble else None,
+            "ensemble_flagged": bool(ensemble_flagged[idx]),
             "ground_truth_malicious": bool(node_pids[idx] in malicious_pids) if malicious_pids else "unknown",
         }
         row.update({fname: float(X[idx, i]) for i, fname in enumerate(feature_names)})
@@ -123,7 +159,6 @@ def evaluate_graph(gexf_path: Path, model_path: Path, malicious_pids: set):
     results["top_flagged"] = top_rows
 
     return results
-
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate K-Guard model against DARPA attack graph(s).")
@@ -142,10 +177,14 @@ def main():
 
     if args.model.exists():
         bundle_check = joblib.load(args.model)
-        if bundle_check.get("lof_model") is None:
-            print("NOTE: loaded model bundle has no lof_model -- scoring with IsolationForest only.")
-        else:
-            print("Scoring with IsolationForest + LOF (flagged if either model fires).")
+        active = ["IsolationForest"]
+        if bundle_check.get("lof_model") is not None:
+            active.append("LOF")
+        if bundle_check.get("dbscan_model") is not None:
+            active.append("DBSCAN")
+        has_ensemble_check = bundle_check.get("meta", {}).get("ensemble_threshold") is not None
+        suffix = " + ensemble (z-score combination)" if has_ensemble_check else ""
+        print(f"Scoring with: {' + '.join(active)}{suffix} (flagged if any fires).")
 
     all_results = []
     for gexf_path in sorted(args.attack_dir.glob("*.gexf")):
@@ -157,7 +196,6 @@ def main():
 
     args.out_json.write_text(json.dumps(all_results, indent=2))
     print(f"\nSaved full results (incl. top-flagged tables) to {args.out_json}")
-
 
 if __name__ == "__main__":
     main()

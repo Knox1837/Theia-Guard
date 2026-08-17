@@ -12,10 +12,16 @@ data/ground_truth/*.pdf
 ml/models/*.joblib
 ml/models/*.json
 
+# Tuning recommendations (regenerable via ml/tune_if.py, tune_lof.py, tune_dbscan.py)
+ml/if_best_params.json
+ml/lof_best_params.json
+ml/dbscan_best_params.json
+
 # Evaluation outputs
 results.json
 results/
 *.results.json
+results_3session.json
 
 # Jupyter
 .ipynb_checkpoints/

@@ -1,7 +1,7 @@
 """
 Loads the saved CPG, extracts features via ml/features.py, fits an IsolationForest, and prints a threat report with root cause attribution.
 To evaluate against the synthetic attack graph, run:
-python -m src.evaluate --attack-dir data/processed/attack --model ml\models\baseline_model.joblib --out-json results.json
+python -m src.evaluate --attack-dir data/processed/attack --model ml/models/baseline_model.joblib --out-json results.json
 """
 
 import sys
@@ -37,9 +37,8 @@ def load_model(path: Path = MODEL_PATH):
             f"first (see ml/train.py docstring for how to capture baseline data)."
         )
     bundle = joblib.load(path)
-    # lof_model is an optional second, independent detector -- older model
-    # bundles trained before it was added won't have it.
-    return bundle["model"], bundle.get("lof_model"), bundle["meta"]
+    # lof_model and dbscan_model are optional second/third independent detectors 
+    return bundle["model"], bundle.get("lof_model"), bundle.get("dbscan_model"), bundle["meta"]
 
 def run_detection(G: nx.DiGraph):
     """Runs the ML anomaly detector on the given causal provenance graph and prints a report of any anomalies found"""
@@ -51,7 +50,7 @@ def run_detection(G: nx.DiGraph):
         print("No process nodes found in graph")
         return
 
-    clf, lof, meta = load_model()
+    clf, lof, dbscan, meta = load_model()
     threshold = meta["threshold"]
     print(f"Using baseline model trained {meta['trained_at']} "
           f"(threshold={threshold:.4f}, target FPR={meta['threshold_fpr_target']:.2%})")
@@ -59,8 +58,7 @@ def run_detection(G: nx.DiGraph):
     scores = clf.decision_function(X)  # continuous anomaly score, not a forced quota
     if_predictions = np.where(scores < threshold, -1, 1)
 
-    # LOF(Local Outlier Factor)
-    # A node is flagged if EITHER model calls it anomalous (OR-combination), which favors recall since this is a security tool. Its verdict is reported separately so it's clear which model(s) triggered each alert.
+    # LOF: second, independent detector.
     lof_scores = None
     lof_predictions = np.ones(X.shape[0], dtype=int)
     if lof is not None and "lof_threshold" in meta:
@@ -70,10 +68,27 @@ def run_detection(G: nx.DiGraph):
         print(f"Using LOF model (n_neighbors={meta.get('lof_n_neighbors')}, "
               f"threshold={lof_threshold:.4f})")
     else:
-        print("No LOF model found in this bundle -- scoring with IsolationForest only. "
+        print("No LOF model found in this bundle -- skipping. "
               "Retrain with the current ml/train.py to add LOF.")
 
-    predictions = np.where((if_predictions == -1) | (lof_predictions == -1), -1, 1)
+    # DBSCAN-style scorer: third, independent detector
+    dbscan_scores = None
+    dbscan_predictions = np.ones(X.shape[0], dtype=int)
+    if dbscan is not None and "dbscan_threshold" in meta:
+        dbscan_threshold = meta["dbscan_threshold"]
+        dbscan_scores = dbscan.decision_function(X)
+        dbscan_predictions = np.where(dbscan_scores < dbscan_threshold, -1, 1)
+        print(f"Using DBSCAN-style model (min_samples={meta.get('dbscan_min_samples')}, "
+              f"threshold={dbscan_threshold:.4f})")
+    else:
+        print("No DBSCAN model found in this bundle -- skipping. "
+              "Retrain with the current ml/train.py to add it.")
+
+    # A node is flagged if ANY of the three models calls it anomalous (OR-combination)
+    predictions = np.where(
+        (if_predictions == -1) | (lof_predictions == -1) | (dbscan_predictions == -1),
+        -1, 1,
+    )
 
     print("\nK-GUARD ML CONTENT-AWARE THREAT REPORT")
     mttrc_samples = []
@@ -94,6 +109,8 @@ def run_detection(G: nx.DiGraph):
             flagged_by.append(f"IsolationForest (score={scores[i]:.4f})")
         if lof_predictions[i] == -1:
             flagged_by.append(f"LOF (score={lof_scores[i]:.4f})")
+        if dbscan_predictions[i] == -1:
+            flagged_by.append(f"DBSCAN (score={dbscan_scores[i]:.4f})")
         print(f"   -> Flagged by: {', '.join(flagged_by)}")
         # Surface the kernel's own verdict first, if it has one
         sec_label = G.nodes[node].get("security_label")
