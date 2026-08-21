@@ -74,6 +74,11 @@ def build_graphs(bin_path: Path, schema_path: Path, attack_windows):
     start_time = time.time()
     PROGRESS_EVERY = 20000
 
+    # Timestamp diagnostics
+    min_timestamp_ns = None
+    max_timestamp_ns = None
+    attack_timestamp_hits = 0
+
     for kind, obj in _stream_records_auto(bin_path, schema_path):
         total_yielded += 1
         if total_yielded % PROGRESS_EVERY == 0:
@@ -92,8 +97,21 @@ def build_graphs(bin_path: Path, schema_path: Path, attack_windows):
         # kind == "event"
         ev: Event = obj
         event_count += 1
+
+        # Track the actual timestamp range present in the DARPA capture.
+        if ev.timestamp_ns:
+            if min_timestamp_ns is None or ev.timestamp_ns < min_timestamp_ns:
+                min_timestamp_ns = ev.timestamp_ns
+            if max_timestamp_ns is None or ev.timestamp_ns > max_timestamp_ns:
+                max_timestamp_ns = ev.timestamp_ns
+
+        is_attack = in_attack_window(ev.timestamp_ns)
+
+        if is_attack:
+            attack_timestamp_hits += 1
+
         relation = EVENT_TYPE_TO_RELATION.get(ev.event_type)
-        target_g = attack_g if in_attack_window(ev.timestamp_ns) else clean_g
+        target_g = attack_g if is_attack else clean_g
 
         if relation and ev.subject_uuid and ev.predicate_object_uuid:
             ensure_process_node(target_g, ev.subject_uuid)
@@ -129,6 +147,12 @@ def build_graphs(bin_path: Path, schema_path: Path, attack_windows):
                     g[ev.subject_uuid][ev.predicate_object_uuid][key] += (ev.size or 0)
 
     print(f"Processed {subject_count} subjects, {event_count} events.")
+
+    if min_timestamp_ns is not None:
+        print(f"Timestamp range: {min_timestamp_ns} - {max_timestamp_ns}")
+
+    print(f"Events inside attack windows: {attack_timestamp_hits}")
+
     return clean_g, attack_g
 
 
