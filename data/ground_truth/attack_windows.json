@@ -14,7 +14,7 @@
       "description": "Firefox exploited via www.nhra.com C2 -> elevate to root -> process listing -> inject into sshd. Confirmed timestamps: 14:48 Firefox connects, 14:49 getpid/whoami (pid 534051), 14:50 elevate success."
     }
   ],
-  "malicious_pids": [534051],
+  "malicious_pids": [534051, 4821],
   "known_indicators": {
     "c2_ips": ["189.141.204.211", "208.203.20.42"],
     "c2_ports": [80, 80],

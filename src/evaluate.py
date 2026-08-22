@@ -89,6 +89,24 @@ def evaluate_graph(gexf_path: Path, model_path: Path, malicious_pids: set):
         except (TypeError, ValueError):
             pid = -1
         node_pids.append(pid)
+        
+    resolvable_mask = np.array([pid != -1 for pid in node_pids])
+    n_unresolved = int((~resolvable_mask).sum())
+    if n_unresolved:
+        print(f"Excluding {n_unresolved} node(s) with unresolved pid=-1 from evaluation.")
+
+    X = X[resolvable_mask]
+    node_list = [n for n, keep in zip(node_list, resolvable_mask) if keep]
+    node_pids = [pid for pid, keep in zip(node_pids, resolvable_mask) if keep]
+    scores = scores[resolvable_mask]
+    if_flagged = if_flagged[resolvable_mask]
+    lof_scores = lof_scores[resolvable_mask]
+    lof_flagged = lof_flagged[resolvable_mask]
+    dbscan_scores = dbscan_scores[resolvable_mask]
+    dbscan_flagged = dbscan_flagged[resolvable_mask]
+    flagged = flagged[resolvable_mask]
+    ensemble_scores = ensemble_scores[resolvable_mask]
+    ensemble_flagged = ensemble_flagged[resolvable_mask]
 
     results = {
         "gexf_path": str(gexf_path),

@@ -38,6 +38,5 @@ __pycache__/
 .env
 .env.*
 
-notebooks/
 output/
 scripts/
